@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Plugin BepInEx (IL2CPP) minimal pour FM26 Human Engine.
+
+    Ce projet ne fait PAS partie de la chaîne de build "normale" (dotnet build / dotnet test
+    à la racine du repo) : il dépend de DLL BepInEx vendues localement dans libs/ (non
+    commitées, voir libs/README.md) qui ne sont disponibles que sur une machine avec BepInEx
+    installé pour FM26. Ne pas ajouter ce projet aux dépendances de FM26.Engine ou de ses tests.
+
+    Cible net6.0 : BepInEx.Unity.IL2CPP.dll (le runtime CoreCLR de BepInEx 6.0.0-pre.2) est
+    lui-même compilé en .NETCoreApp,Version=v6.0.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>FM26.BepInExPlugin</AssemblyName>
+    <RootNamespace>FM26.BepInExPlugin</RootNamespace>
+    <!-- Les DLL BepInEx sont déjà présentes dans BepInEx/core/ et BepInEx/plugins/ ne doit
+         contenir que le plugin lui-même : on ne copie donc pas les références BepInEx dans la
+         sortie de build. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">
+      <HintPath>libs/BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Preloader.Core">
+      <HintPath>libs/BepInEx.Preloader.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.Common">
+      <HintPath>libs/BepInEx.Unity.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>libs/BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>libs/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

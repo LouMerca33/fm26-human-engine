@@ -160,8 +160,117 @@ même run :
   tension forte vs. bonne entente sur toute la chaîne — la QA avait noté que chaque module
   n'était testé qu'en isolation.
 
+## Chantier BepInEx / plugin macOS (session locale, 2026-08-14, accès réel à FM26)
+
+Travail séparé de la Couche 1 ci-dessus, dans `src/FM26.BepInExPlugin/` — ne touche pas à
+`src/FM26.Engine/`. Objectif de session : Phase 0 de la roadmap (setup BepInEx macOS,
+hello-world plugin). **Bloqué avant la fin de la Phase 0**, voir détail ci-dessous.
+
+### Ce qui marche
+
+- **Installation BepInEx** : `BepInEx-Unity.IL2CPP-macos-x64-6.0.0-pre.2.zip` (release GitHub
+  officielle `BepInEx/BepInEx`, tag `v6.0.0-pre.2`, build interne `6.0.0-be.697`) installé dans
+  le dossier racine du jeu (`~/Library/Application Support/Steam/steamapps/common/Football
+  Manager 26/`, **à côté de** `fm.app`, pas dedans — c'est le layout standard documenté par
+  BepInEx pour les bundles `.app` macOS). Contient `BepInEx/`, `dotnet/` (runtime CoreCLR
+  embarqué), `libdoorstop.dylib`, `run_bepinex.sh` (avec `executable_name="fm.app"` configuré).
+  Piège rencontré : le zip officiel perd tous les bits de permission à l'extraction
+  (`----------` sur tous les fichiers) — nécessite `chmod -R u+rwX` après `unzip`.
+- **Injection confirmée fonctionnelle** : lancement via `arch -x86_64 ./run_bepinex.sh` depuis
+  la racine du jeu. `vmmap` sur le process confirme `Code Type: X86-64 (translated)` (Rosetta
+  actif comme prévu) et le Preloader BepInEx s'exécute bien dans le process (logs Preloader
+  visibles, génération de `BepInEx/config/BepInEx.cfg`, `BepInEx/interop/`,
+  `BepInEx/unity-libs/` sur le premier lancement). L'injection dylib + Doorstop fonctionnent
+  donc bout en bout sur ce jeu.
+- **Plugin BepInEx minimal créé et compile** : `src/FM26.BepInExPlugin/Plugin.cs`, classe
+  `Plugin : BasePlugin` avec `[BepInPlugin]`, log `Log.LogInfo(...)` dans `Load()` — le vrai
+  hello-world demandé (pas juste une dylib brute). `dotnet build
+  src/FM26.BepInExPlugin/FM26.BepInExPlugin.csproj` réussit (net6.0, car
+  `BepInEx.Unity.IL2CPP.dll` de cette release cible `.NETCoreApp,Version=v6.0`). Référence 5 DLL
+  BepInEx vendues localement dans `src/FM26.BepInExPlugin/libs/` (non commitées, gitignored —
+  voir `libs/README.md` pour la procédure de régénération). **Projet volontairement absent de
+  `FM26HumanEngine.sln`** : un test a montré que `dotnet build FM26HumanEngine.sln` échoue si
+  `libs/` est absent (cas de la routine cloud, qui n'a pas accès à FM26/BepInEx) — l'ajouter à
+  la solution aurait cassé son `dotnet test` autonome. Se build uniquement en ciblant son
+  `.csproj` directement.
+
+### Ce qui bloque — Phase 0 non terminée
+
+**Étape 2 (premier lancement → génération des stubs d'interop) échoue**, avant même d'atteindre
+le chargement de plugins. Cause racine identifiée avec certitude (log complet dans
+`/private/tmp/.../scratchpad/bepinex/first_launch.log` de cette session, non conservé dans le
+repo) :
+
+1. **La chaîne de version Unity embarquée par FM26 est non standard.** Lecture hexadécimale de
+   `fm.app/Contents/Resources/Data/globalgamemanagers` à l'offset 0x30 :
+   `"6000.0.52f1-fm26-05f1"` — Sports Interactive/SEGA a suffixé leur build Unity custom
+   (`-fm26-05f1`) au lieu du format standard `6000.0.52f1`.
+2. `BepInEx.Unity.Common.UnityInfo.DetermineVersion()` lit bien ce champ mais
+   `UnityVersion.Parse()` (package `AssetRipper.Primitives`) rejette la chaîne à cause du
+   suffixe et lève une exception (catchée en interne) ; comme les autres candidats
+   (`data.unity3d`, `mainData`) n'existent pas pour ce jeu, la détection tombe en fallback total
+   → `Version = default` (`"0.0.0a0"`) — confirmé par le log : `Running under Unity 0.0.0a0`.
+3. Conséquence en cascade : (a) `Il2CppInteropManager` construit l'URL de téléchargement des
+   librairies de base Unity avec cette fausse version → `https://unity.bepinex.dev/libraries/
+   0.0.0a0.zip` → **404** ; (b) même en ignorant ça, `Il2CppInterop.Runtime.UnityVersionHandler`
+   n'a pas de handler enregistré pour la version `0.0.0` → **exception fatale dans le
+   Preloader** (`TypeInitializationException` → `ApplicationException: No handler`) avant tout
+   chargement de plugin.
+4. **Pas de mécanisme de contournement propre côté BepInEx** : pas de variable d'env, pas de
+   clé dans `BepInEx.cfg`, pas d'argument CLI pour forcer la version Unity détectée
+   (`UnityInfo.SetRuntimeUnityVersion` existe mais est `internal`, inatteignable depuis un
+   plugin — et de toute façon les plugins ne sont même pas encore chargés à ce stade).
+
+**Second blocage indépendant, découvert en creusant une piste de contournement** (déposer un
+faux fichier `data.unity3d` avec une version propre dans `Contents/Resources/Data/`, un des
+autres chemins que `UnityInfo` sonde, pour court-circuiter la lecture ratée de
+`globalgamemanagers` sans toucher au jeu) : **toute écriture à l'intérieur du bundle
+`fm.app/Contents/...` échoue avec `EPERM` ("Operation not permitted")**, aussi bien depuis le
+shell que depuis le process FM26 lui-même une fois le dylib injecté (le crash du Preloader
+essaie d'écrire un log `Contents/MacOS/preloader_*.log` et échoue pour la même raison).
+Vérifié : propriétaire/permissions/ACL/flags du fichier sont tous normaux (`rwxr-xr-x`,
+`louysmercadier:staff`, pas de `schg`/`uchg`, pas d'ACL), volume monté en lecture-écriture — ce
+n'est pas un problème de permissions Unix classique. Signature typique de la protection macOS
+**"App Management"** (Réglages Système → Confidentialité et sécurité → Gestion des
+applications, introduite en 2023+) qui bloque la modification du contenu d'un bundle `.app` par
+un autre process/outil tant qu'elle n'est pas explicitement accordée — ça se règle uniquement
+via l'interface graphique, pas en headless/CLI. Ce contournement est donc lui-même bloqué,
+indépendamment du point 1.
+
+**Rien n'a été forcé pour contourner ces deux blocages** (pas de patch binaire de BepInEx, pas
+de modification des fichiers du jeu, pas de tentative de désactiver SIP/App Management) —
+conformément à la consigne de s'arrêter plutôt que de pousser une solution bancale.
+
+### Pistes pour la suite (non tentées cette session)
+
+- Compiler une version patchée de `BepInEx.Unity.Common.dll` (ou d'`AssetRipper.Primitives`)
+  tolérant un suffixe après la version Unity standard — nécessite de builder BepInEx depuis les
+  sources (faisable, dotnet 10 SDK dispo localement), mais c'est modifier un binaire tiers, pas
+  juste une config.
+- Accorder manuellement la permission "Gestion des applications" à l'app hôte du terminal dans
+  Réglages Système, ce qui débloquerait la piste du faux `data.unity3d` — nécessite une action
+  utilisateur en dehors de toute session Claude Code.
+- Vérifier si une version plus récente de BepInEx (bleeding-edge sur builds.bepinex.dev, au-delà
+  du tag `v6.0.0-pre.2`/`be.697` testé ici) a corrigé la tolérance de `UnityVersion.Parse` —
+  pas vérifié cette session.
+- Ouvrir un ticket upstream (BepInEx ou AssetRipper) : cas générique de studios qui suffixent
+  leur version Unity custom, susceptible de concerner d'autres jeux.
+
+### État du dossier jeu (aucune save touchée)
+
+BepInEx reste installé dans le dossier du jeu (fichiers inertes tant que le jeu n'est pas
+lancé via `run_bepinex.sh` sous Rosetta manuellement — un lancement normal via Steam/Finder
+n'injecte rien, `DYLD_INSERT_LIBRARIES` n'est positionné que dans le process lancé
+explicitement par `run_bepinex.sh`). Le process FM26 du test s'est arrêté de lui-même après
+l'exception fatale du Preloader ; aucun kill manuel n'a été nécessaire, aucune save n'a été
+créée ni modifiée (le jeu n'a jamais atteint le menu principal).
+
 ## Prochaines étapes
 
+- **BepInEx/plugin macOS** : résoudre le blocage de détection de version Unity (cf. pistes
+  ci-dessus) avant de pouvoir poursuivre les étapes 2-5 de la Phase 0 (génération interop,
+  validation du chargement du plugin en jeu, inventaire des classes/namespaces utiles pour la
+  Phase 3).
 - Revue QA adversariale (`fm26-qa`) lancée sur ce premier jet de la Couche 2 en fin de run ; si elle
   remonte de vrais bugs, les corriger dans le prochain run et reporter ici (même processus qu'en
   Couche 1 — voir section QA plus haut, qui documente encore uniquement la revue de Couche 1).

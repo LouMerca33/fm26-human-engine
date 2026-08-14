@@ -10,3 +10,8 @@ obj/
 
 ## OS
 .DS_Store
+
+## BepInEx reference assemblies (vendored locally for the plugin project, not redistributed via git —
+## see src/FM26.BepInExPlugin/libs/README.md for how to repopulate them)
+src/FM26.BepInExPlugin/libs/*.dll
+src/FM26.BepInExPlugin/libs/*.xml
