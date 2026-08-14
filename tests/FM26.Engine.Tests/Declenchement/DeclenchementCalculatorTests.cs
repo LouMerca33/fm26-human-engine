@@ -53,6 +53,34 @@ public class DeclenchementCalculatorTests
         Assert.InRange(probabilite, 0.0, 1.0);
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void CalculerProbabilitePonderee_AvecScoreAffiniteNonFini_LeveException(double scoreInvalide)
+    {
+        var archetype = new ArchetypeEvenement("clash_vestiaire", probabiliteBase: 0.04);
+        var contexte = new ContexteJeu(serieDefaitesConsecutives: 0, positionClassementNormalisee: 0.5);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DeclenchementCalculator.CalculerProbabilitePonderee(archetype, contexte, scoreInvalide));
+    }
+
+    [Theory]
+    [InlineData(-100, 0.6)] // modificateur_affinité = 1.5 (borne haute) × probabiliteBase 0.4
+    [InlineData(100, 0.2)]  // modificateur_affinité = 0.5 (borne basse) × probabiliteBase 0.4
+    public void CalculerProbabilitePonderee_AuxBornesDuScoreAffinite_AtteintLesBornesAttenduesDuModificateur(int scoreAffinite, double probabiliteAttendue)
+    {
+        // probabiliteBase=0.4 (assez bas pour que le clamp final [0,1] n'écrase pas l'effet du
+        // modificateur_affinité) et contexte neutre isolent ce modificateur pour l'observer directement.
+        var archetype = new ArchetypeEvenement("clash_vestiaire", probabiliteBase: 0.4);
+        var contexteNeutre = new ContexteJeu(serieDefaitesConsecutives: 0, positionClassementNormalisee: 0.0);
+
+        double probabilite = DeclenchementCalculator.CalculerProbabilitePonderee(archetype, contexteNeutre, scoreAffinite);
+
+        Assert.Equal(probabiliteAttendue, probabilite, precision: 10);
+    }
+
     [Fact]
     public void EstDeclenche_QuandRollEstInferieurALaProbabilite_RenvoieVrai()
     {
@@ -81,6 +109,18 @@ public class DeclenchementCalculatorTests
         bool declenche = DeclenchementCalculator.EstDeclenche(probabilitePonderee: 0.0, generateur);
 
         Assert.False(declenche);
+    }
+
+    [Fact]
+    public void EstDeclenche_AvecProbabiliteNaN_LeveException()
+    {
+        // Régression : Math.Clamp et les comparaisons `< 0.0 or > 1.0` laissent passer NaN
+        // silencieusement en .NET (toute comparaison avec NaN vaut false). Sans garde explicite,
+        // un NaN en amont produirait un événement qui ne se déclenche jamais, sans erreur.
+        var generateur = new GenerateurAleatoireFixe(0.5);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            DeclenchementCalculator.EstDeclenche(double.NaN, generateur));
     }
 
     [Theory]

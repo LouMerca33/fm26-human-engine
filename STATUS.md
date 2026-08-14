@@ -13,7 +13,7 @@ src/FM26.Engine/                  (class library, net8.0, pur C#, aucune dépend
   Traits/
     PersonalityTraits.cs          — struct-record des 6 traits (ego, leadership, loyaute_groupe,
                                      tolerance_pression, discretion, ambition), validés 1-20
-    TraitGenerationContext.cs     — contexte de génération (id joueur, âge, nationalité, poste)
+    TraitGenerationContext.cs     — contexte de génération (id joueur, âge)
     IPersonalityTraitGenerator.cs — interface de génération
     DeterministicPersonalityTraitGenerator.cs — implémentation pure C# (voir décision ci-dessous)
   Affinite/
@@ -28,7 +28,7 @@ tests/FM26.Engine.Tests/          (xUnit)
   Traits/, Affinite/, Declenchement/
 ```
 
-`dotnet test` : **53/53 tests passent**, aucun test cassé commité.
+`dotnet test` : **65/65 tests passent**, aucun test cassé commité.
 
 ## Décision de conception : génération des traits
 
@@ -63,9 +63,30 @@ sans dépendance réseau dans une couche censée être pure C# testable en isola
 
 ## QA
 
-Une revue adversariale (agent `fm26-qa`) a été lancée sur ce premier jet en fin de run — voir
-le prochain STATUS.md pour les conclusions et corrections éventuelles si le run suivant les
-intègre avant que ce fichier ne soit relu.
+Revue adversariale (agent `fm26-qa`) passée sur ce premier jet, corrections appliquées dans le
+même run :
+
+- **Bug réel corrigé — NaN désamorçait silencieusement le garde-fou de déclenchement.**
+  `Math.Clamp(NaN, ...)` et les comparaisons `< / >` renvoient toujours `false` avec NaN en
+  .NET : un `scoreAffinite` NaN traversait tout le pipeline sans jamais lever d'exception, et
+  `EstDeclenche` ne se déclenchait alors plus jamais silencieusement (aucun événement, aucune
+  erreur — un faux négatif permanent et invisible). Corrigé par : validation explicite
+  "fini" à la source (`EvenementHistorique.ImpactAffinite`, `CalculerProbabilitePonderee`) et
+  garde de `EstDeclenche` réécrite en forme positive (`!(x >= 0 && x <= 1)`) pour que NaN soit
+  effectivement rejeté. Tests de régression ajoutés.
+- **API malhonnête corrigée — `Nationalite`/`Poste` retirés de `TraitGenerationContext`.**
+  Ces paramètres étaient acceptés, validés, jamais utilisés par le générateur déterministe.
+  Retirés plutôt que câblés avec une corrélation numérique non justifiée (nationalité →
+  personnalité serait arbitraire) : Couche 2 pourra les réintroduire dans un contexte propre
+  au générateur Claude, qui a un usage réel pour ce signal (cohérence narrative du texte).
+- **Bornes du clamp `ModificateurAffinite` corrigées** (0.3/2.0 → 0.5/1.5, les seules
+  réellement atteignables avec les poids actuels) et testées explicitement aux deux bornes.
+- **Garde ajoutée** : `AffiniteCalculator.CalculerScore` lève désormais si les deux
+  `Personne` passées ont le même `Id` (self-pairing silencieux détecté par la QA).
+- **Test d'intégration ajouté** (`PipelineIntegrationTests`) : génération de traits → score
+  d'affinité → probabilité de déclenchement enchaînés bout en bout, plus un cas comparatif
+  tension forte vs. bonne entente sur toute la chaîne — la QA avait noté que chaque module
+  n'était testé qu'en isolation.
 
 ## Prochaines étapes
 

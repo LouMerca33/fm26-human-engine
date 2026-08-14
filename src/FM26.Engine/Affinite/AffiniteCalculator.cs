@@ -20,6 +20,11 @@ public static class AffiniteCalculator
         ArgumentNullException.ThrowIfNull(a);
         ArgumentNullException.ThrowIfNull(b);
 
+        if (a.Id == b.Id)
+        {
+            throw new ArgumentException("Impossible de calculer une affinité d'une personne avec elle-même.", nameof(b));
+        }
+
         double ego = ComposanteEgo(a.Traits.Ego, b.Traits.Ego);
         double leadership = ComposanteLeadership(a.Traits.Leadership, b.Traits.Leadership);
         double poste = ComposanteConcurrencePoste(a, b);

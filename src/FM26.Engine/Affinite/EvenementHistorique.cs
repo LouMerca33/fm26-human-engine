@@ -15,6 +15,12 @@ public sealed record EvenementHistorique
 
     public EvenementHistorique(double impactAffinite, int joursDepuis)
     {
+        if (!double.IsFinite(impactAffinite))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(impactAffinite), impactAffinite, "L'impact d'un événement doit être un nombre fini.");
+        }
+
         if (joursDepuis < 0)
         {
             throw new ArgumentOutOfRangeException(

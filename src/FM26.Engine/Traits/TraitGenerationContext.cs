@@ -2,7 +2,14 @@ namespace FM26.Engine.Traits;
 
 /// <summary>
 /// Contexte utilisé pour générer un profil de personnalité cohérent (spec §2.1) :
-/// pas de tirage purement random, la génération tient compte de l'âge et du poste.
+/// pas de tirage purement random, la génération tient compte de l'âge.
+///
+/// La spec mentionne aussi la nationalité et l'historique de carrière simulé comme
+/// facteurs de cohérence "si dispo dans la base". Ces signaux ont surtout de la valeur
+/// pour un générateur appuyé sur du texte (Couche 2, appel Claude) ; l'implémentation
+/// déterministe de Couche 1 n'a pas de base justifiable pour les traduire en ajustement
+/// numérique de traits, donc ils ne figurent pas ici tant qu'ils ne sont pas réellement
+/// consommés — pas de paramètre accepté puis ignoré.
 /// </summary>
 public sealed record TraitGenerationContext
 {
@@ -11,10 +18,8 @@ public sealed record TraitGenerationContext
 
     public string IdentifiantJoueur { get; }
     public int Age { get; }
-    public string? Nationalite { get; }
-    public string? Poste { get; }
 
-    public TraitGenerationContext(string identifiantJoueur, int age, string? nationalite = null, string? poste = null)
+    public TraitGenerationContext(string identifiantJoueur, int age)
     {
         if (string.IsNullOrWhiteSpace(identifiantJoueur))
         {
@@ -30,7 +35,5 @@ public sealed record TraitGenerationContext
 
         IdentifiantJoueur = identifiantJoueur;
         Age = age;
-        Nationalite = nationalite;
-        Poste = poste;
     }
 }

@@ -123,10 +123,28 @@ public class AffiniteCalculatorTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new EvenementHistorique(impactAffinite: -10, joursDepuis: -1));
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void EvenementHistorique_AvecImpactNonFini_LeveException(double impactInvalide)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new EvenementHistorique(impactInvalide, joursDepuis: 0));
+    }
+
     [Fact]
     public void Personne_AvecIdVide_LeveException()
     {
         Assert.Throws<ArgumentException>(() =>
             new Personne("", "MC", new PersonalityTraits(10, 10, 10, 10, 10, 10)));
+    }
+
+    [Fact]
+    public void CalculerScore_AvecLaMemePersonneDesDeuxCotes_LeveException()
+    {
+        var a = CreerPersonne("meme-id", "MC");
+        var aBis = CreerPersonne("meme-id", "MC");
+
+        Assert.Throws<ArgumentException>(() => AffiniteCalculator.CalculerScore(a, aBis));
     }
 }
