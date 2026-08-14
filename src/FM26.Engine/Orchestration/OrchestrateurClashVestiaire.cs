@@ -106,6 +106,14 @@ public static class OrchestrateurClashVestiaire
         instance.PasserAConsequence(jourActuel, effets);
     }
 
+    // Pénalité de la branche "couvrir" en cas de fuite média, appliquée par-dessus l'effet de
+    // base de la branche. L'impact sur l'affinité de la paire n'est pas additionné à l'effet de
+    // base mais remplacé : la trahison ressentie d'une fuite qui éclate au grand jour l'emporte
+    // largement sur le bénéfice — même modeste — d'un secret resté partagé.
+    private const double PenaliteReputationFuite = -15.0;
+    private const double PenaliteCohesionFuite = -5.0;
+    private const double ImpactAffiniteFuite = -20.0;
+
     private static EffetsArchetype ResoudreEffetsBranche(
         ArchetypeClashVestiaire archetype, InstanceClashVestiaire instance, ChoixCommunication choix, IGenerateurAleatoire generateurFuite)
     {
@@ -119,8 +127,19 @@ public static class OrchestrateurClashVestiaire
         double probabiliteFuite = RisqueFuiteMediaCalculator.CalculerProbabiliteFuite(instance.JoueurA, instance.JoueurB);
         bool fuite = generateurFuite.TirerRoll() < probabiliteFuite;
 
-        return fuite
-            ? effetsBase with { ReputationClub = effetsBase.ReputationClub - 15.0, Cohesion = effetsBase.Cohesion - 5.0 }
-            : effetsBase;
+        if (!fuite)
+        {
+            return effetsBase;
+        }
+
+        // Construction explicite (pas de `with` : EffetsArchetype n'expose que des propriétés
+        // en `get`, précisément pour que toute variante repasse par la validation du constructeur).
+        return new EffetsArchetype(
+            moralEquipe: effetsBase.MoralEquipe,
+            cohesion: effetsBase.Cohesion + PenaliteCohesionFuite,
+            moralJoueurCible: effetsBase.MoralJoueurCible,
+            respectAutorite: effetsBase.RespectAutorite,
+            reputationClub: effetsBase.ReputationClub + PenaliteReputationFuite,
+            impactAffinitePaire: ImpactAffiniteFuite);
     }
 }

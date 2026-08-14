@@ -63,12 +63,43 @@ public class OrchestrateurClashVestiaireTests
         Assert.Single(instance.EffetsAppliques);
         Assert.Equal(-8.0, instance.EffetsAppliques[0].MoralEquipe);
         Assert.Equal(-12.0, instance.EffetsAppliques[0].Cohesion);
+        Assert.Equal(-25.0, instance.EffetsAppliques[0].ImpactAffinitePaire);
     }
 
     [Fact]
     public void Demarrer_AvecLesMemesJoueurs_LeveException()
     {
         Assert.Throws<ArgumentException>(() => OrchestrateurClashVestiaire.Demarrer(Archetype, JoueurA, JoueurA, jourActuel: 0));
+    }
+
+    [Fact]
+    public void Demarrer_AvecArchetypeNull_LeveException()
+    {
+        Assert.Throws<ArgumentNullException>(() => OrchestrateurClashVestiaire.Demarrer(null!, JoueurA, JoueurB, jourActuel: 0));
+    }
+
+    [Fact]
+    public void EstDeclenche_AvecArchetypeNull_LeveException()
+    {
+        var contexte = new ContexteJeu(serieDefaitesConsecutives: 0, positionClassementNormalisee: 0.5);
+
+        Assert.Throws<ArgumentNullException>(() =>
+            OrchestrateurClashVestiaire.EstDeclenche(null!, contexte, scoreAffinite: 0.0, new GenerateurAleatoireFixe(0.5)));
+    }
+
+    [Fact]
+    public void Avancer_AvecInstanceNull_LeveException()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            OrchestrateurClashVestiaire.Avancer(Archetype, null!, jourActuel: 0, new GenerateurAleatoireFixe(0.5)));
+    }
+
+    [Fact]
+    public void Avancer_AvecGenerateurFuiteNull_LeveException()
+    {
+        var instance = OrchestrateurClashVestiaire.Demarrer(Archetype, JoueurA, JoueurB, jourActuel: 0);
+
+        Assert.Throws<ArgumentNullException>(() => OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 0, null!));
     }
 
     // --- Incident -> reaction_presse ---
@@ -118,6 +149,39 @@ public class OrchestrateurClashVestiaireTests
         Assert.Equal(ChoixCommunication.Apaiser, instance.Choix);
     }
 
+    [Fact]
+    public void Avancer_DepuisReactionPresse_PileALaVeilleDuDelaiDe14Jours_NeResoutPasEncore()
+    {
+        // Entrée en reaction_presse au jour 1 ; délai de consequence_moyen_terme = 14 jours ->
+        // le seuil est jour >= 15. Au jour 14 (un jour avant), la branche ne doit pas se résoudre.
+        var instance = DemarrerEtPasserAReactionPresse();
+
+        OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 14, new GenerateurAleatoireFixe(0.5), choix: ChoixCommunication.Apaiser);
+
+        Assert.Equal(PhaseInstance.ReactionPresse, instance.PhaseActuelle);
+        Assert.Single(instance.EffetsAppliques);
+    }
+
+    [Fact]
+    public void Avancer_DepuisReactionPresse_LePremierChoixFourniEstDefinitif()
+    {
+        var instance = DemarrerEtPasserAReactionPresse();
+
+        // Premier choix fourni avant l'échéance : mémorisé.
+        OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 3, new GenerateurAleatoireFixe(0.5), choix: ChoixCommunication.Apaiser);
+        Assert.Equal(ChoixCommunication.Apaiser, instance.Choix);
+
+        // Un choix différent fourni plus tard, toujours avant l'échéance, ne remplace pas le premier.
+        OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 8, new GenerateurAleatoireFixe(0.5), choix: ChoixCommunication.Sanctionner);
+        Assert.Equal(ChoixCommunication.Apaiser, instance.Choix);
+
+        // La résolution finale applique bien la branche du premier choix (apaiser), pas du second (sanctionner).
+        OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 15, new GenerateurAleatoireFixe(0.5), choix: ChoixCommunication.Sanctionner);
+        var effets = instance.EffetsAppliques[^1];
+        Assert.Equal(3.0, effets.MoralEquipe); // effet d'apaiser, pas de sanctionner
+        Assert.Equal(0.0, effets.MoralJoueurCible);
+    }
+
     // --- Les 3 branches de consequence_moyen_terme ---
 
     [Fact]
@@ -134,6 +198,7 @@ public class OrchestrateurClashVestiaireTests
         Assert.Equal(0.0, effets.MoralJoueurCible);
         Assert.Equal(0.0, effets.RespectAutorite);
         Assert.Equal(0.0, effets.ReputationClub);
+        Assert.Equal(15.0, effets.ImpactAffinitePaire);
     }
 
     [Fact]
@@ -149,6 +214,7 @@ public class OrchestrateurClashVestiaireTests
         Assert.Equal(0.0, effets.MoralEquipe);
         Assert.Equal(0.0, effets.Cohesion);
         Assert.Equal(0.0, effets.ReputationClub);
+        Assert.Equal(-15.0, effets.ImpactAffinitePaire);
     }
 
     [Fact]
@@ -163,6 +229,7 @@ public class OrchestrateurClashVestiaireTests
         var effets = instance.EffetsAppliques[^1];
         Assert.Equal(-2.0, effets.Cohesion);
         Assert.Equal(0.0, effets.ReputationClub);
+        Assert.Equal(5.0, effets.ImpactAffinitePaire);
     }
 
     [Fact]
@@ -177,6 +244,9 @@ public class OrchestrateurClashVestiaireTests
         var effets = instance.EffetsAppliques[^1];
         Assert.Equal(-2.0 - 5.0, effets.Cohesion);
         Assert.Equal(-15.0, effets.ReputationClub);
+        // La fuite remplace l'impact affinité de base de la branche (+5, complicité) par un
+        // impact négatif (-20, trahison ressentie) plutôt que de l'additionner.
+        Assert.Equal(-20.0, effets.ImpactAffinitePaire);
     }
 
     [Fact]
@@ -241,6 +311,48 @@ public class OrchestrateurClashVestiaireTests
 
         // Un seul appel, même avec un jour très avancé : seule la transition incident -> reaction_presse a eu lieu.
         Assert.Equal(PhaseInstance.ReactionPresse, instance.PhaseActuelle);
+    }
+
+    // --- Boucle de rétroaction sur l'affinité (spec §2.2) ---
+
+    [Fact]
+    public void ConstruireHistoriquePourAffinite_ApresLIncidentSeul_ProduitUnEvenementNegatif()
+    {
+        var instance = OrchestrateurClashVestiaire.Demarrer(Archetype, JoueurA, JoueurB, jourActuel: 10);
+
+        var historique = instance.ConstruireHistoriquePourAffinite(jourActuel: 10);
+
+        var evenement = Assert.Single(historique);
+        Assert.Equal(-25.0, evenement.ImpactAffinite);
+        Assert.Equal(0, evenement.JoursDepuis);
+    }
+
+    [Fact]
+    public void ConstruireHistoriquePourAffinite_RecalculeLAncienneteParRapportAuJourFourni()
+    {
+        var instance = OrchestrateurClashVestiaire.Demarrer(Archetype, JoueurA, JoueurB, jourActuel: 10);
+
+        var historique = instance.ConstruireHistoriquePourAffinite(jourActuel: 40);
+
+        Assert.Equal(30, Assert.Single(historique).JoursDepuis);
+    }
+
+    [Fact]
+    public void ConstruireHistoriquePourAffinite_ApresResolutionApaiser_ProduitDeuxEvenementsReinjectablesDansAffiniteCalculator()
+    {
+        var instance = DemarrerEtPasserAReactionPresse(); // incident au jour 0
+        OrchestrateurClashVestiaire.Avancer(Archetype, instance, jourActuel: 15, new GenerateurAleatoireFixe(0.5), choix: ChoixCommunication.Apaiser);
+
+        var historique = instance.ConstruireHistoriquePourAffinite(jourActuel: 15);
+
+        Assert.Equal(2, historique.Count);
+
+        // Réinjecté dans le moteur de la Couche 1 : l'affinité de la paire doit refléter la
+        // résolution (apaisement net positif, malgré l'incident initial négatif), pas rester
+        // comme si le clash n'avait jamais eu lieu.
+        double scoreAvecHistorique = AffiniteCalculator.CalculerScore(JoueurA, JoueurB, historique);
+        double scoreSansHistorique = AffiniteCalculator.CalculerScore(JoueurA, JoueurB);
+        Assert.NotEqual(scoreSansHistorique, scoreAvecHistorique);
     }
 
     private static InstanceClashVestiaire DemarrerEtPasserAReactionPresse()

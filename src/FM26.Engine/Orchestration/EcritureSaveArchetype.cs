@@ -19,6 +19,7 @@ public sealed record EcritureSaveArchetype
             throw new ArgumentException("La liste des champs modifiés ne peut pas être vide.", nameof(champsModifies));
         }
 
-        ChampsModifies = champsModifies;
+        // Copie défensive, même raison que PhaseConsequenceMoyenTerme._effetsParBranche.
+        ChampsModifies = champsModifies.ToArray();
     }
 }

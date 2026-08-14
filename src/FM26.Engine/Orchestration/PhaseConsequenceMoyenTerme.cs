@@ -27,7 +27,10 @@ public sealed record PhaseConsequenceMoyenTerme : PhaseArchetypeBase
             }
         }
 
-        _effetsParBranche = effetsParBranche;
+        // Copie défensive : sans elle, un appelant qui réutilise et mute ensuite le dictionnaire
+        // d'origine (ex. un futur chargement depuis JSON/config, spec §6 phase 5) empoisonnerait
+        // silencieusement cette instance déjà construite.
+        _effetsParBranche = new Dictionary<ChoixCommunication, EffetsArchetype>(effetsParBranche);
     }
 
     public EffetsArchetype ObtenirEffets(ChoixCommunication choix) => _effetsParBranche[choix];

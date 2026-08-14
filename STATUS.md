@@ -4,9 +4,8 @@ Dernière mise à jour : 2026-08-14 (run autonome Claude Code, environnement clo
 
 ## Où en est le projet
 
-**Couche 2 (orchestration d'archétype d'événement, clash_vestiaire) : implémentée et testée, premier jet.**
-Voir section dédiée plus bas. Une revue QA adversariale a été lancée sur ce premier jet ; si elle
-remonte de vrais bugs, ils seront corrigés dans un prochain run et reportés ici.
+**Couche 2 (orchestration d'archétype d'événement, clash_vestiaire) : implémentée, testée, revue QA
+faite et corrections appliquées dans ce même run.** Voir sections dédiées plus bas.
 
 **Couche 1 (traits/affinités/déclenchement) : implémentée et testée, premier jet.**
 Structure .NET créée à la racine :
@@ -69,7 +68,8 @@ tests/FM26.Engine.Tests/
   OrchestrationPipelineIntegrationTests.cs — traits → affinité → déclenchement → orchestration → narration, bout en bout
 ```
 
-`dotnet test` (suite complète) : **114/114 tests passent**, aucun test cassé commité.
+`dotnet test` (suite complète, après corrections QA ci-dessous) : **125/125 tests passent**, aucun
+test cassé commité.
 
 ### Décisions de conception — Couche 2
 
@@ -101,6 +101,48 @@ tests/FM26.Engine.Tests/
   probabilité pondérée et le tirage du roll à `DeclenchementCalculator` (Couche 1) via un
   `ArchetypeEvenement` construit à la volée ; `InstanceClashVestiaire` réutilise directement
   `Affinite.Personne` plutôt que de redéfinir un type joueur pour l'orchestration.
+
+### QA — Couche 2
+
+Revue adversariale (agent `fm26-qa`) passée sur le premier jet, corrections appliquées dans le même run :
+
+- **Bug réel corrigé — `EffetsArchetype` contournait sa propre validation via `with`/initialiseur
+  d'objet.** Les propriétés étaient déclarées en `{ get; init; }` ; le constructeur validait bien
+  `double.IsFinite`, mais une expression `with` ou un initialiseur d'objet appellent le constructeur
+  sans-paramètre synthétisé des record structs, pas le constructeur défini — la validation était
+  donc totalement contournable (`effets with { MoralEquipe = double.NaN }` ne levait rien). Corrigé
+  en repassant les propriétés en `get` seul, comme `PersonalityTraits` en Couche 1 (qui bloque déjà
+  structurellement ce contournement — vérifié par la QA qu'un `with` dessus ne compile même pas).
+  Conséquence : `with` n'est plus utilisable sur `EffetsArchetype` ; l'unique site d'appel
+  (pénalité de fuite média dans `OrchestrateurClashVestiaire.ResoudreEffetsBranche`) reconstruit
+  désormais l'instance explicitement via le constructeur validant. Sans conséquence pratique
+  aujourd'hui (le seul site d'appel ne manipulait que des constantes finies), mais serait devenu un
+  risque réel de corruption de save une fois la Phase 3 (écriture dans la save) branchée.
+- **Lacune réelle corrigée — la résolution d'un clash ne refermait jamais la boucle de rétroaction
+  sur l'affinité (spec §2.2 : "recalculé après chaque événement impliquant la paire").** Aucun
+  `EvenementHistorique` n'était produit après un clash_vestiaire, quelle que soit la branche : deux
+  joueurs qui viennent de vivre un clash avaient exactement la même affinité qu'avant aux yeux du
+  moteur de déclenchement, ce qui rendait la description de la branche "apaiser" ("probabilité de
+  réplique réduite") fausse en pratique. Corrigé par un nouveau champ
+  `EffetsArchetype.ImpactAffinitePaire` (peuplé sur l'incident et les 3 branches, valeurs premier
+  jet documentées comme telles) et une nouvelle méthode
+  `InstanceClashVestiaire.ConstruireHistoriquePourAffinite(jourActuel)` qui matérialise les impacts
+  déjà appliqués en `EvenementHistorique` réinjectables dans `AffiniteCalculator.CalculerScore` —
+  l'ancienneté de chaque événement est recalculée par rapport au jour fourni par l'appelant, pas
+  figée à la construction, cohérent avec la sémantique de `EvenementHistorique.JoursDepuis` déjà en
+  place en Couche 1.
+- **Durcissement — copies défensives ajoutées** dans `PhaseConsequenceMoyenTerme` (dictionnaire des
+  effets par branche) et `EcritureSaveArchetype` (liste des champs modifiés) : sans elles, un
+  appelant qui mute la collection d'origine après construction (scénario réaliste dès la Phase 5,
+  chargement d'archétypes depuis config/JSON) empoisonnerait silencieusement une instance déjà
+  construite. Testé explicitement (mutation post-construction sans effet sur l'instance).
+- **Tests renforcés** : frontière exacte du délai de 14 jours testée au jour près (jour 14 ne résout
+  pas, jour 15 résout — auparavant testé loin de la frontière côté "ne résout pas"), comportement
+  "premier choix utilisateur gagne pour toujours" testé explicitement (deux choix différents fournis
+  avant résolution, seul le premier compte), arguments `null` de `OrchestrateurClashVestiaire`
+  testés, nouveaux tests sur `ConstruireHistoriquePourAffinite`.
+- **Non retenu tel quel** : la QA a aussi noté que les valeurs premier-jet d'apaiser/couvrir restent
+  non calibrées sur du contenu réel — attendu et déjà documenté comme tel, pas un bug.
 
 ## Décision de conception : génération des traits
 
@@ -271,9 +313,6 @@ créée ni modifiée (le jeu n'a jamais atteint le menu principal).
   ci-dessus) avant de pouvoir poursuivre les étapes 2-5 de la Phase 0 (génération interop,
   validation du chargement du plugin en jeu, inventaire des classes/namespaces utiles pour la
   Phase 3).
-- Revue QA adversariale (`fm26-qa`) lancée sur ce premier jet de la Couche 2 en fin de run ; si elle
-  remonte de vrais bugs, les corriger dans le prochain run et reporter ici (même processus qu'en
-  Couche 1 — voir section QA plus haut, qui documente encore uniquement la revue de Couche 1).
 - Étendre l'orchestration aux autres archétypes listés en spec §3 ("Autres archétypes à modéliser
   sur ce patron") une fois clash_vestiaire éprouvé : fuite média, boycott d'entraînement, tension
   président/entraîneur, négociation d'agent difficile, scandale extra-sportif, rivalité de poste.

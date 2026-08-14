@@ -26,6 +26,9 @@ public sealed class InstanceClashVestiaire
 
     private readonly List<EffetsArchetype> _effetsAppliques = new();
 
+    /// <summary>Jour d'application de chaque entrée correspondante de <see cref="_effetsAppliques"/> (même index).</summary>
+    private readonly List<int> _joursEffetsAppliques = new();
+
     internal InstanceClashVestiaire(Personne joueurA, Personne joueurB, int jourDemarrage, EffetsArchetype effetsIncident)
     {
         ArgumentNullException.ThrowIfNull(joueurA);
@@ -40,7 +43,7 @@ public sealed class InstanceClashVestiaire
         JoueurB = joueurB;
         PhaseActuelle = PhaseInstance.Incident;
         JourEntreeDansPhase = jourDemarrage;
-        _effetsAppliques.Add(effetsIncident);
+        AjouterEffetApplique(effetsIncident, jourDemarrage);
     }
 
     internal void PasserAReactionPresse(int jour)
@@ -58,11 +61,46 @@ public sealed class InstanceClashVestiaire
     {
         PhaseActuelle = PhaseInstance.ConsequenceMoyenTerme;
         JourEntreeDansPhase = jour;
-        _effetsAppliques.Add(effets);
+        AjouterEffetApplique(effets, jour);
     }
 
     internal void Terminer()
     {
         PhaseActuelle = PhaseInstance.Terminee;
+    }
+
+    private void AjouterEffetApplique(EffetsArchetype effets, int jour)
+    {
+        _effetsAppliques.Add(effets);
+        _joursEffetsAppliques.Add(jour);
+    }
+
+    /// <summary>
+    /// Matérialise les <see cref="EffetsArchetype.ImpactAffinitePaire"/> déjà appliqués en
+    /// <see cref="EvenementHistorique"/> réinjectables dans <see cref="Affinite.AffiniteCalculator.CalculerScore"/>
+    /// pour la paire <see cref="JoueurA"/>/<see cref="JoueurB"/> — c'est ce qui referme la boucle de
+    /// rétroaction de la spec §2.2 ("recalculé après chaque événement impliquant la paire") : sans
+    /// cet appel, un clash déjà résolu n'a aucun effet sur la probabilité d'un futur clash entre les
+    /// deux mêmes joueurs. Impacts nuls omis. L'ancienneté de chaque événement est recalculée par
+    /// rapport à <paramref name="jourActuel"/>, pas figée au moment de l'application de l'effet —
+    /// cohérent avec la sémantique de <see cref="EvenementHistorique.JoursDepuis"/> ("au moment du calcul").
+    /// </summary>
+    public IReadOnlyCollection<EvenementHistorique> ConstruireHistoriquePourAffinite(int jourActuel)
+    {
+        var historique = new List<EvenementHistorique>();
+
+        for (int i = 0; i < _effetsAppliques.Count; i++)
+        {
+            double impact = _effetsAppliques[i].ImpactAffinitePaire;
+            if (impact == 0.0)
+            {
+                continue;
+            }
+
+            int joursDepuis = Math.Max(0, jourActuel - _joursEffetsAppliques[i]);
+            historique.Add(new EvenementHistorique(impact, joursDepuis));
+        }
+
+        return historique;
     }
 }
