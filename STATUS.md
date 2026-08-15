@@ -287,11 +287,76 @@ Cpp2IL/LibCpp2IL embarqués dans be.697 ne savaient lire que les métadonnées I
 version 29 ; FM26 (Unity 6000.0.52f1) utilise la version 31.
 
 **Fix** : mise à jour vers un build bleeding-edge plus récent, **BepInEx 6.0.0-be.785**
-(téléchargé depuis builds.bepinex.dev, extrait dans
-`/private/tmp/.../scratchpad/bepinex-be785/`, installé dans le dossier du jeu à la place de
-be.697). Lancé sous `caffeinate -i` + Rosetta + le fix de version déjà en place (shadow data
+(build #785 sur builds.bepinex.dev, commit `6abdba47eeebe08552282e7a58ef0f4a9ab60b62`, daté du
+2026-06-28 — le plus récent disponible au moment de cette session, largement au-delà du be.780
+téléchargé-mais-jamais-déployé d'une session précédente). Téléchargé directement depuis
+`https://builds.bepinex.dev/projects/bepinex_be/785/BepInEx-Unity.IL2CPP-macos-x64-6.0.0-be.785%2B6abdba4.zip`,
+extrait dans `/private/tmp/.../scratchpad/bepinex-be785/extracted/`. Installation : l'install
+be.697 existante a été **sauvegardée intacte** dans `.bepinex_be697_backup/` (sibling de
+`fm.app` dans le dossier du jeu, non versionné — rollback possible en cas de besoin) avant de
+copier `BepInEx/`, `dotnet/`, `libdoorstop.dylib`, `.doorstop_version`, `changelog.txt` (→
+`bepinex_changelog.txt`) et `run_bepinex.sh` du nouveau build à leur place, `chmod -R u+rwX`
+sur `BepInEx/` et `dotnet/`, `chmod u+x` sur `run_bepinex.sh` et `libdoorstop.dylib`, et
+`executable_name="fm.app"` reconfiguré dans le nouveau `run_bepinex.sh` (chaque nouveau build
+repart d'un script vierge avec `executable_name=""`).
+
+**Deux régressions silencieuses propres à be.785 découvertes et corrigées** (aucune des deux
+n'existait avec be.697 — ce sont des changements de comportement introduits entre les deux
+builds, pas des problèmes préexistants) :
+
+1. **be.785 force macOS Apple Silicon en arm64 natif, cassant le CoreCLR x86_64 embarqué.**
+   Le nouveau `run_bepinex.sh` de be.785 détecte `is_apple_silicon` (via
+   `sysctl -n machdep.cpu.brand_string`) et, dans ce cas, fait inconditionnellement
+   `exec arch -e DYLD_INSERT_LIBRARIES="${DYLD_INSERT_LIBRARIES}" "$executable_path" "$@"` — un
+   `arch` **sans** flag `-arch`, qui relance le binaire universel `fm.app` nativement en arm64
+   *indépendamment* de la préférence Rosetta du shell parent (même lancé via
+   `arch -x86_64 ./run_bepinex.sh`, confirmé avec `vmmap` : `Code Type: ARM64`, pas
+   `X86-64 (translated)`). Or le runtime CoreCLR embarqué dans ce build (`dotnet/`) est
+   x86_64-only : sous arm64 natif, son chargement échoue silencieusement — **aucun
+   `BepInEx/LogOutput.log` n'est jamais créé**, le jeu boote normalement (Steam API, etc.)
+   comme si BepInEx n'existait pas, sans la moindre erreur visible. Diagnostiqué en comparant
+   `vmmap <pid> | grep "Code Type"` entre les deux tentatives.
+   **Fix appliqué** (dans le `run_bepinex.sh` du dossier du jeu, pas dans le repo — voir
+   patch exact ci-dessous) : forcer `arch -x86_64 -e DYLD_INSERT_LIBRARIES=...` explicitement.
+2. **`BEPINEX_GAME_ASSEMBLY_PATH` ne suffit pas à lever le `[Fatal] Could not locate Il2Cpp
+   game assembly`.** Une fois le point 1 corrigé (confirmé `X86-64 (translated)`), Cpp2IL
+   réussissait bel et bien (voir preuve ci-dessous) mais le lancement échouait quand même sur
+   ce même message fatal *après* `Chainloader initialized`. Root cause différente de ce qui
+   était supposé lors du blocage initial : ce message vient de
+   `IL2CPPChainloader.Initialize()` (`Runtimes/Unity/BepInEx.Unity.IL2CPP/IL2CPPChainloader.cs`,
+   commit `6abdba4`) qui fait `NativeLibrary.TryLoad("GameAssembly", ...)` — un dlopen par nom
+   court, **indépendant de `BEPINEX_GAME_ASSEMBLY_PATH`** (cette variable ne sert qu'à
+   `Cpp2IlApi`/`Il2CppInteropManager` pour la lecture des métadonnées, pas à ce hook runtime).
+   `NativeLibrary.TryLoad` cherche dans les chemins de recherche dylib standards
+   (`DYLD_LIBRARY_PATH` notamment), pas dans `fm.app/Contents/Frameworks/` où vit le vrai
+   fichier. **Fix appliqué** : ajout de `fm.app/Contents/Frameworks` (calculé depuis
+   `$executable_path`) à `DYLD_LIBRARY_PATH` dans `run_bepinex.sh`, **et** re-passage explicite
+   de `DYLD_LIBRARY_PATH` via un second `-e` dans l'appel `arch -x86_64 -e ... -e ...` du point
+   1 (même raison que pour `DYLD_INSERT_LIBRARIES` : `arch` strip les variables `DYLD_*` de
+   l'environnement transmis au process exec'd si elles ne sont pas explicitement repassées via
+   `-e`).
+
+Les deux patchs vivent uniquement dans le `run_bepinex.sh` du dossier du jeu (hors repo git,
+comme le reste de l'installation BepInEx) — **à réappliquer si le dossier du jeu est
+réinitialisé ou si l'install be.785 est refaite from scratch**. Bloc patché (juste avant le
+`exec` final, section `if [ -n "${is_apple_silicon}" ]; then ... fi`) :
+
+```sh
+fm26_frameworks_dir="$(dirname "$(dirname "$executable_path")")/Frameworks"
+export DYLD_LIBRARY_PATH="${doorstop_directory}:${fm26_frameworks_dir}:${DYLD_LIBRARY_PATH}"
+# ... (bloc DYLD_INSERT_LIBRARIES inchangé) ...
+if [ -n "${is_apple_silicon}" ]; then
+    export ARCHPREFERENCE="arm64,x86_64"
+    exec arch -x86_64 -e DYLD_INSERT_LIBRARIES="${DYLD_INSERT_LIBRARIES}" -e DYLD_LIBRARY_PATH="${DYLD_LIBRARY_PATH}" "$executable_path" "$@"
+else
+    exec "$executable_path" "$@"
+fi
+```
+
+Lancé sous `caffeinate -i` + `arch -x86_64` + le fix de version déjà en place (shadow data
 dir) + `BEPINEX_GAME_ASSEMBLY_PATH` pointé explicitement vers
-`fm.app/Contents/Frameworks/GameAssembly.dylib`.
+`fm.app/Contents/Frameworks/GameAssembly.dylib` (toujours nécessaire pour Cpp2IL/metadata,
+en plus — pas à la place — du fix `DYLD_LIBRARY_PATH` ci-dessus).
 
 **Résultat confirmé** : `BepInEx/interop/` contient maintenant les 162 vraies assemblies
 IL2CPP du jeu, y compris les assemblies spécifiques FM26/Sports Interactive —
@@ -335,20 +400,26 @@ la vérification jusqu'à un état incertain.
 
 ### État du dossier jeu (aucune save touchée)
 
-BepInEx reste installé dans le dossier du jeu (fichiers inertes tant que le jeu n'est pas
-lancé via `run_bepinex.sh` sous Rosetta manuellement — un lancement normal via Steam/Finder
-n'injecte rien, `DYLD_INSERT_LIBRARIES` n'est positionné que dans le process lancé
-explicitement par `run_bepinex.sh`). Le process FM26 du test s'est arrêté de lui-même après
-l'exception fatale du Preloader ; aucun kill manuel n'a été nécessaire, aucune save n'a été
-créée ni modifiée (le jeu n'a jamais atteint le menu principal).
+BepInEx 6.0.0-be.785 reste installé dans le dossier du jeu (fichiers inertes tant que le jeu
+n'est pas lancé via `run_bepinex.sh` sous Rosetta manuellement — un lancement normal via
+Steam/Finder n'injecte rien, `DYLD_INSERT_LIBRARIES` n'est positionné que dans le process
+lancé explicitement par `run_bepinex.sh`). L'ancienne install be.697 est conservée intacte
+dans `.bepinex_be697_backup/` (sibling de `fm.app`) pour rollback si besoin. Contrairement à
+be.697 (qui échouait sur une exception fatale et se terminait de lui-même), le process be.785
+du dernier test a tourné ~7 minutes en continuant son bootstrap normal (aucune exception
+fatale BepInEx cette fois) et a été **arrêté manuellement par précaution** (`SIGTERM` propre,
+pas de `-9`) avant d'atteindre un écran ou menu quelconque. Aucune save n'a été créée ni
+modifiée.
 
 ## Prochaines étapes
 
-- **BepInEx/plugin macOS** : la détection de version Unity est réglée (voir "Blocage n°1 —
-  RÉSOLU"). Reste à lever le blocage n°2 (Cpp2IL ne supporte pas les métadonnées IL2CPP v31,
-  cf. pistes ci-dessus — build BepInEx bleeding-edge plus récent à retenter proprement) avant
-  de pouvoir poursuivre les étapes 2-5 de la Phase 0 (génération interop, validation du
-  chargement du plugin en jeu, inventaire des classes/namespaces utiles pour la Phase 3).
+- **BepInEx/plugin macOS** : les blocages n°1 (détection de version Unity) et n°2 (Cpp2IL /
+  métadonnées IL2CPP v31, résolu via be.785) sont réglés. Reste à confirmer le chargement
+  effectif du plugin hello-world en jeu (cf. "Pistes pour la suite" ci-dessus — relancer avec
+  be.785 déjà installé et les deux patchs `run_bepinex.sh` déjà en place, surveiller
+  précisément le moment de chargement des plugins IL2CPP après "Chainloader initialized"),
+  puis faire l'inventaire exploratoire des classes/namespaces `FM.*`/`SI.*` utiles pour la
+  Phase 3 (moral, réputation, relations) dans `BepInEx/interop/`.
 - Étendre l'orchestration aux autres archétypes listés en spec §3 ("Autres archétypes à modéliser
   sur ce patron") une fois clash_vestiaire éprouvé : fuite média, boycott d'entraînement, tension
   président/entraîneur, négociation d'agent difficile, scandale extra-sportif, rivalité de poste.
