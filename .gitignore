@@ -15,3 +15,6 @@ obj/
 ## see src/FM26.BepInExPlugin/libs/README.md for how to repopulate them)
 src/FM26.BepInExPlugin/libs/*.dll
 src/FM26.BepInExPlugin/libs/*.xml
+
+## Compiled native shim (rebuild locally via native/globalgamemanagers-version-shim/build.sh)
+native/globalgamemanagers-version-shim/*.dylib

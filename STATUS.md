@@ -236,67 +236,93 @@ hello-world plugin). **Bloqué avant la fin de la Phase 0**, voir détail ci-des
   la solution aurait cassé son `dotnet test` autonome. Se build uniquement en ciblant son
   `.csproj` directement.
 
-### Ce qui bloque — Phase 0 non terminée
+### Blocage n°1 (détection de version Unity) — RÉSOLU, session du 2026-08-15
 
-**Étape 2 (premier lancement → génération des stubs d'interop) échoue**, avant même d'atteindre
-le chargement de plugins. Cause racine identifiée avec certitude (log complet dans
-`/private/tmp/.../scratchpad/bepinex/first_launch.log` de cette session, non conservé dans le
-repo) :
+Le blocage de détection de version décrit ci-dessous a été corrigé, vérifié dans le vrai
+`BepInEx/LogOutput.log` du jeu (`Running under Unity 6000.0.52f1`, plus de fallback
+`0.0.0a0`, plus de 404 sur le téléchargement des librairies Unity). Root cause complète :
 
-1. **La chaîne de version Unity embarquée par FM26 est non standard.** Lecture hexadécimale de
-   `fm.app/Contents/Resources/Data/globalgamemanagers` à l'offset 0x30 :
-   `"6000.0.52f1-fm26-05f1"` — Sports Interactive/SEGA a suffixé leur build Unity custom
-   (`-fm26-05f1`) au lieu du format standard `6000.0.52f1`.
-2. `BepInEx.Unity.Common.UnityInfo.DetermineVersion()` lit bien ce champ mais
-   `UnityVersion.Parse()` (package `AssetRipper.Primitives`) rejette la chaîne à cause du
-   suffixe et lève une exception (catchée en interne) ; comme les autres candidats
-   (`data.unity3d`, `mainData`) n'existent pas pour ce jeu, la détection tombe en fallback total
-   → `Version = default` (`"0.0.0a0"`) — confirmé par le log : `Running under Unity 0.0.0a0`.
-3. Conséquence en cascade : (a) `Il2CppInteropManager` construit l'URL de téléchargement des
-   librairies de base Unity avec cette fausse version → `https://unity.bepinex.dev/libraries/
-   0.0.0a0.zip` → **404** ; (b) même en ignorant ça, `Il2CppInterop.Runtime.UnityVersionHandler`
-   n'a pas de handler enregistré pour la version `0.0.0` → **exception fatale dans le
-   Preloader** (`TypeInitializationException` → `ApplicationException: No handler`) avant tout
-   chargement de plugin.
-4. **Pas de mécanisme de contournement propre côté BepInEx** : pas de variable d'env, pas de
-   clé dans `BepInEx.cfg`, pas d'argument CLI pour forcer la version Unity détectée
-   (`UnityInfo.SetRuntimeUnityVersion` existe mais est `internal`, inatteignable depuis un
-   plugin — et de toute façon les plugins ne sont même pas encore chargés à ce stade).
+1. `BepInEx.Core.Paths.SetExecutablePath()` calcule `GameDataPath` comme
+   `<GameRoot>/<ProcessName>_Data` (convention Windows/Linux, `MyGame_Data/` à côté d'un
+   `.exe`). Ce chemin n'existe jamais sur macOS, où les données sont dans
+   `<GameRoot>/<name>.app/Contents/Resources/Data/`. Résultat : chaque `File.Exists()` que
+   `UnityInfo.DetermineVersion()` tente (`globalgamemanagers`, `data.unity3d`, `mainData`)
+   échoue silencieusement, sans jamais lire la vraie version — fallback total sur
+   `0.0.0a0`.
+2. **Par-dessus ça**, la chaîne de version que FM26 embarque est de toute façon non standard :
+   `"6000.0.52f1-fm26-05f1"` (suffixe custom Sports Interactive, offset 0x3B dans
+   `globalgamemanagers`) — que `UnityVersion.Parse()` (`AssetRipper.Primitives`) rejette même
+   si le fichier était trouvé au bon endroit.
+3. Pas de mécanisme de contournement officiel côté BepInEx (`UnityInfo.SetRuntimeUnityVersion`
+   existe mais est `internal`, inatteignable avant l'échec).
+4. Écrire quoi que ce soit dans `fm.app/Contents/...` échoue avec `EPERM` — protection macOS
+   "App Management" (Réglages Système → Confidentialité et sécurité), pas accordable en
+   headless.
 
-**Second blocage indépendant, découvert en creusant une piste de contournement** (déposer un
-faux fichier `data.unity3d` avec une version propre dans `Contents/Resources/Data/`, un des
-autres chemins que `UnityInfo` sonde, pour court-circuiter la lecture ratée de
-`globalgamemanagers` sans toucher au jeu) : **toute écriture à l'intérieur du bundle
-`fm.app/Contents/...` échoue avec `EPERM` ("Operation not permitted")**, aussi bien depuis le
-shell que depuis le process FM26 lui-même une fois le dylib injecté (le crash du Preloader
-essaie d'écrire un log `Contents/MacOS/preloader_*.log` et échoue pour la même raison).
-Vérifié : propriétaire/permissions/ACL/flags du fichier sont tous normaux (`rwxr-xr-x`,
-`louysmercadier:staff`, pas de `schg`/`uchg`, pas d'ACL), volume monté en lecture-écriture — ce
-n'est pas un problème de permissions Unix classique. Signature typique de la protection macOS
-**"App Management"** (Réglages Système → Confidentialité et sécurité → Gestion des
-applications, introduite en 2023+) qui bloque la modification du contenu d'un bundle `.app` par
-un autre process/outil tant qu'elle n'est pas explicitement accordée — ça se règle uniquement
-via l'interface graphique, pas en headless/CLI. Ce contournement est donc lui-même bloqué,
-indépendamment du point 1.
+**Fix retenu** (dans `native/macos-gamedata-shadow/setup_shadow_data_dir.sh`, committé) :
+crée le dossier `<ProcessName>_Data` que BepInEx attend, comme *sibling* de `fm.app` (donc
+dans un emplacement normal et librement inscriptible du dossier Steam, jamais dans
+`Contents/...`). Rempli de symlinks vers le vrai dossier `Data/`, sauf `globalgamemanagers`
+qui reçoit une **copie** avec un seul octet patché (offset 59/0x3B, le `-` après
+`6000.0.52f1` remplacé par un NUL) — tronque la chaîne à `"6000.0.52f1"`, que
+`UnityVersion.Parse()` accepte. Le fichier réel dans `fm.app` n'est jamais touché. Script
+idempotent, avec vérification de l'octet avant patch (échoue proprement si un futur patch du
+jeu change ce layout plutôt que de corrompre un octet au hasard).
 
-**Rien n'a été forcé pour contourner ces deux blocages** (pas de patch binaire de BepInEx, pas
-de modification des fichiers du jeu, pas de tentative de désactiver SIP/App Management) —
-conformément à la consigne de s'arrêter plutôt que de pousser une solution bancale.
+Une piste alternative plus radicale a aussi été explorée et fonctionne en principe mais n'a
+pas été retenue comme fix principal : `native/globalgamemanagers-version-shim/version_shim.c`,
+une dylib d'interposition (`DYLD_INTERPOSE` sur `open`/`read`/`pread`/`lseek`/`close`) qui
+patche l'octet en mémoire au moment de la lecture, sans jamais rien écrire sur disque, pas
+même une copie. Gardée dans le repo (voir son en-tête pour le détail technique, y compris un
+piège rencontré avec `dlsym(RTLD_NEXT, ...)` qui bouclait à l'infini) comme alternative si le
+shadow-dir posait un jour problème.
 
-### Pistes pour la suite (non tentées cette session)
+### Blocage n°2 (nouveau, non résolu) — Cpp2IL ne supporte pas les métadonnées IL2CPP v31
 
-- Compiler une version patchée de `BepInEx.Unity.Common.dll` (ou d'`AssetRipper.Primitives`)
-  tolérant un suffixe après la version Unity standard — nécessite de builder BepInEx depuis les
-  sources (faisable, dotnet 10 SDK dispo localement), mais c'est modifier un binaire tiers, pas
-  juste une config.
-- Accorder manuellement la permission "Gestion des applications" à l'app hôte du terminal dans
-  Réglages Système, ce qui débloquerait la piste du faux `data.unity3d` — nécessite une action
-  utilisateur en dehors de toute session Claude Code.
-- Vérifier si une version plus récente de BepInEx (bleeding-edge sur builds.bepinex.dev, au-delà
-  du tag `v6.0.0-pre.2`/`be.697` testé ici) a corrigé la tolérance de `UnityVersion.Parse` —
-  pas vérifié cette session.
-- Ouvrir un ticket upstream (BepInEx ou AssetRipper) : cas générique de studios qui suffixent
-  leur version Unity custom, susceptible de concerner d'autres jeux.
+Une fois le blocage n°1 corrigé, le lancement va plus loin (téléchargement des librairies
+Unity réussi) puis échoue sur une limitation différente et plus profonde, confirmée dans le
+`LogOutput.log` du jeu :
+
+```
+[Error :InteropManager] Failed to generate Il2Cpp interop assemblies:
+Cpp2IL.Core.Exceptions.LibCpp2ILInitializationException: Fatal Exception initializing LibCpp2IL!
+ ---> System.FormatException: Unsupported metadata version found! We support 23-29, got 31
+[Fatal :   BepInEx] Could not locate Il2Cpp game assembly (GameAssembly.dll, UserAssembly.dll or libil2cpp.so).
+```
+
+Cpp2IL/LibCpp2IL (embarqués dans BepInEx 6.0.0-be.697) ne savent lire que les métadonnées
+IL2CPP jusqu'à la version 29. FM26, sur Unity 6000.0.52f1, utilise la version 31 — un format
+plus récent que ce que ce build de Cpp2IL supporte. C'est indépendant du blocage n°1 (qui
+concerne la *détection de version*, pas le *format des métadonnées*) et n'a pas de rapport
+avec le chemin `GameAssembly.dylib` (le message "Could not locate" est une conséquence en
+cascade de l'échec de Cpp2IL, pas un problème de chemin séparé — vérifié en pointant
+explicitement `BEPINEX_GAME_ASSEMBLY_PATH` vers le vrai fichier, `fm.app/Contents/Frameworks/
+GameAssembly.dylib`, sans effet sur ce message).
+
+**Tentative de contournement essayée cette session, non concluante** : téléchargement et
+extraction d'un build bleeding-edge plus récent de BepInEx (be.780, dans
+`/private/tmp/.../scratchpad/bepinex-be780/`) dans l'espoir d'un Cpp2IL à jour supportant la
+v31. **Non déployé pour de vrai** : le dernier `LogOutput.log` généré montre encore
+`BepInEx 6.0.0-be.697` — soit l'installation du be.780 n'a pas été menée à son terme, soit
+elle a été abandonnée en cours de route (le run a été interrompu par une mise en veille de la
+machine hôte avant conclusion). **À refaire proprement, pas à supposer résolu.**
+
+**Rien n'a été forcé pour contourner ce blocage** (pas de patch binaire de Cpp2IL, pas de
+modification des fichiers du jeu au-delà du shadow-dir déjà décrit) — conformément à la
+consigne de s'arrêter plutôt que de pousser une solution bancale.
+
+### Pistes pour la suite
+
+- **Prioritaire** : retenter proprement l'installation d'un build BepInEx bleeding-edge plus
+  récent que be.697 (builds.bepinex.dev) et vérifier via un vrai `LogOutput.log` frais si son
+  Cpp2IL supporte les métadonnées v31. C'était la piste en cours quand cette session a été
+  interrompue.
+- Si aucun build BepInEx existant ne supporte v31 : envisager de builder Cpp2IL/LibCpp2IL
+  depuis les sources avec un support v31 (existe potentiellement dans une branche plus
+  récente du projet Cpp2IL indépendamment de BepInEx) — plus lourd, à évaluer seulement si
+  la piste bleeding-edge échoue.
+- Ouvrir un ticket upstream (BepInEx et/ou Cpp2IL) : cas générique Unity 6000.x très récent,
+  susceptible de concerner d'autres jeux, utile même si on trouve un contournement local.
 
 ### État du dossier jeu (aucune save touchée)
 
@@ -309,10 +335,11 @@ créée ni modifiée (le jeu n'a jamais atteint le menu principal).
 
 ## Prochaines étapes
 
-- **BepInEx/plugin macOS** : résoudre le blocage de détection de version Unity (cf. pistes
-  ci-dessus) avant de pouvoir poursuivre les étapes 2-5 de la Phase 0 (génération interop,
-  validation du chargement du plugin en jeu, inventaire des classes/namespaces utiles pour la
-  Phase 3).
+- **BepInEx/plugin macOS** : la détection de version Unity est réglée (voir "Blocage n°1 —
+  RÉSOLU"). Reste à lever le blocage n°2 (Cpp2IL ne supporte pas les métadonnées IL2CPP v31,
+  cf. pistes ci-dessus — build BepInEx bleeding-edge plus récent à retenter proprement) avant
+  de pouvoir poursuivre les étapes 2-5 de la Phase 0 (génération interop, validation du
+  chargement du plugin en jeu, inventaire des classes/namespaces utiles pour la Phase 3).
 - Étendre l'orchestration aux autres archétypes listés en spec §3 ("Autres archétypes à modéliser
   sur ce patron") une fois clash_vestiaire éprouvé : fuite média, boycott d'entraînement, tension
   président/entraîneur, négociation d'agent difficile, scandale extra-sportif, rivalité de poste.
