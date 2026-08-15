@@ -384,17 +384,54 @@ les deux cas (le stdout s'arrête au chargement des traductions/multijoueur, bie
 fichiers du jeu au-delà du shadow-dir déjà décrit) — arrêt par précaution plutôt que de pousser
 la vérification jusqu'à un état incertain.
 
+### Blocage n°3 (nouveau, non résolu) — le jeu semble stagner avant le chargement des plugins IL2CPP
+
+Session du 2026-08-15, deux essais chronométrés avec surveillance serrée (90s puis 300s),
+symlink `GameAssembly.dylib` en place à la racine du jeu (fix d'un problème séparé rencontré
+en cours de route : `Il2CppInteropManager.ComputeHash()` fait un accès fichier direct sur
+`<GameRoot>/GameAssembly.dylib`, indépendant du fix `DYLD_LIBRARY_PATH` qui ne couvre que le
+chargement dynamique — encore une variante du même problème de layout macOS que les blocages
+précédents ; symlink créé au même endroit que le vrai fichier dans
+`fm.app/Contents/Frameworks/`, jamais de copie).
+
+**Comportement identique et reproductible sur les deux essais** : BepInEx atteint
+"Chainloader initialized" en ~15-20s (rapide, fiable), puis le jeu continue son propre
+bootstrap — tentatives `SteamAPI_Init` qui échouent en boucle
+(`Tried to access Steam interface ... before SteamAPI_Init succeeded`), chargement des
+traductions (~20ms, réussi), création d'un canal multijoueur (`NETWORKING_PLAYFAB`) — puis
+**plus aucune progression visible pendant le reste de la fenêtre d'observation** (jusqu'à 5
+minutes testées), sans jamais atteindre le message de log du plugin hello-world. CPU du
+process élevé et soutenu pendant ce temps (utilisation active confirmée), pas un hang inerte.
+
+Hypothèse à vérifier en priorité pour la suite : le jeu pourrait être bloqué en attente d'une
+initialisation Steam qui n'aboutit jamais dans ce contexte de lancement (process lancé
+manuellement hors Steam, pas via son launcher) — et le chargement des plugins IL2CPP par
+BepInEx pourrait être séquencé après cette étape, expliquant qu'il ne soit jamais atteint tant
+que Steam ne "débloque" pas la suite. Piste non vérifiée cette session.
+
+**Point d'honnêteté, observé identiquement sur les deux essais** : à chaque fois, l'arrêt
+manuel du process (`SIGTERM`) coïncide avec un évènement `Backtrace: Received game crash` dans
+le stdout, exactement au moment de l'arrêt. Reproductible à l'identique deux fois de suite —
+cohérent avec l'hypothèse que le SDK de crash-reporting du jeu (Backtrace) intercepte le
+signal `SIGTERM` lui-même et le journalise comme un crash, plutôt qu'un vrai plantage moteur
+indépendant à chaque fois. Non confirmé formellement (pas de rapport de crash macOS natif
+généré dans `~/Library/Logs/DiagnosticReports` sur ces deux essais), mais le pattern est trop
+régulier pour être une coïncidence. Dans les deux cas : aucun écran de menu atteint, aucune
+save créée ni modifiée (le stdout ne dépasse jamais le chargement des traductions/canal
+multijoueur).
+
 ### Pistes pour la suite
 
-- **Prioritaire** : relancer avec be.785 déjà installé (rien à retélécharger), en surveillant
-  précisément le moment après "Chainloader initialized" où les plugins IL2CPP se chargent
-  réellement — arrêter le process dès le message de log du plugin hello-world capté (ou dès
-  qu'on approche un écran/menu, selon ce qui vient en premier), pas après un délai fixe de
-  plusieurs minutes qui laisse le jeu avancer trop loin dans son bootstrap.
+- **Prioritaire** : vérifier l'hypothèse Steam avant de retenter un simple délai plus long —
+  regarder si `run_bepinex.sh`/l'environnement peut simuler un contexte de lancement Steam
+  valide (`SteamAppId`/fichier `steam_appid.txt` à côté de l'exécutable, une pratique standard
+  pour lancer un jeu Steam hors du client), plutôt que de continuer à allonger un timeout à
+  l'aveugle sans savoir si ça débloquerait quoi que ce soit.
 - Une fois le chargement du plugin confirmé : faire l'inventaire exploratoire des
   classes/namespaces utiles pour la Phase 3 (lecture/écriture moral, réputation, relations
-  joueur/staff) dans les assemblies `FM.*`/`SI.*` maintenant disponibles dans
-  `BepInEx/interop/` — c'était l'étape 5 prévue à l'origine pour ce chantier, jamais atteinte.
+  joueur/staff) dans les assemblies `FM.*`/`SI.*` déjà disponibles dans `BepInEx/interop/`
+  (162 fichiers, confirmées présentes) — c'était l'étape 5 prévue à l'origine pour ce chantier,
+  jamais atteinte.
 - Ouvrir un ticket upstream (BepInEx et/ou Cpp2IL) : cas générique Unity 6000.x très récent,
   susceptible de concerner d'autres jeux, utile même si on trouve un contournement local.
 
@@ -404,12 +441,15 @@ BepInEx 6.0.0-be.785 reste installé dans le dossier du jeu (fichiers inertes ta
 n'est pas lancé via `run_bepinex.sh` sous Rosetta manuellement — un lancement normal via
 Steam/Finder n'injecte rien, `DYLD_INSERT_LIBRARIES` n'est positionné que dans le process
 lancé explicitement par `run_bepinex.sh`). L'ancienne install be.697 est conservée intacte
-dans `.bepinex_be697_backup/` (sibling de `fm.app`) pour rollback si besoin. Contrairement à
-be.697 (qui échouait sur une exception fatale et se terminait de lui-même), le process be.785
-du dernier test a tourné ~7 minutes en continuant son bootstrap normal (aucune exception
-fatale BepInEx cette fois) et a été **arrêté manuellement par précaution** (`SIGTERM` propre,
-pas de `-9`) avant d'atteindre un écran ou menu quelconque. Aucune save n'a été créée ni
-modifiée.
+dans `.bepinex_be697_backup/` (sibling de `fm.app`) pour rollback si besoin. Un symlink
+`GameAssembly.dylib` a été ajouté à la racine du dossier du jeu, pointant vers le vrai fichier
+dans `fm.app/Contents/Frameworks/` (jamais de copie) — nécessaire pour
+`Il2CppInteropManager.ComputeHash()`, cf. "Blocage n°3" ci-dessous. Contrairement à be.697 (qui
+échouait sur une exception fatale et se terminait de lui-même), les runs be.785 continuent
+leur bootstrap normal sans exception fatale BepInEx ; trois lancements de test cette session
+(tous **arrêtés manuellement par précaution**, `SIGTERM` propre) : un de ~7 minutes le
+2026-08-14, deux autres le 2026-08-15 (90s puis 300s, chronométrés). Aucun n'a atteint un
+écran ou menu quelconque, aucune save n'a été créée ni modifiée dans aucun des cas.
 
 ## Prochaines étapes
 
