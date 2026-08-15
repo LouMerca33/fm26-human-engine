@@ -277,50 +277,59 @@ même une copie. Gardée dans le repo (voir son en-tête pour le détail techniq
 piège rencontré avec `dlsym(RTLD_NEXT, ...)` qui bouclait à l'infini) comme alternative si le
 shadow-dir posait un jour problème.
 
-### Blocage n°2 (nouveau, non résolu) — Cpp2IL ne supporte pas les métadonnées IL2CPP v31
+### Blocage n°2 — RÉSOLU avec BepInEx 6.0.0-be.785, session du 2026-08-15
 
-Une fois le blocage n°1 corrigé, le lancement va plus loin (téléchargement des librairies
-Unity réussi) puis échoue sur une limitation différente et plus profonde, confirmée dans le
-`LogOutput.log` du jeu :
+Une fois le blocage n°1 corrigé, une première tentative (BepInEx 6.0.0-be.697) allait plus
+loin (téléchargement des librairies Unity réussi) puis échouait sur une limitation différente
+et plus profonde : `Cpp2IL.Core.Exceptions.LibCpp2ILInitializationException:
+System.FormatException: Unsupported metadata version found! We support 23-29, got 31`.
+Cpp2IL/LibCpp2IL embarqués dans be.697 ne savaient lire que les métadonnées IL2CPP jusqu'à la
+version 29 ; FM26 (Unity 6000.0.52f1) utilise la version 31.
 
-```
-[Error :InteropManager] Failed to generate Il2Cpp interop assemblies:
-Cpp2IL.Core.Exceptions.LibCpp2ILInitializationException: Fatal Exception initializing LibCpp2IL!
- ---> System.FormatException: Unsupported metadata version found! We support 23-29, got 31
-[Fatal :   BepInEx] Could not locate Il2Cpp game assembly (GameAssembly.dll, UserAssembly.dll or libil2cpp.so).
-```
+**Fix** : mise à jour vers un build bleeding-edge plus récent, **BepInEx 6.0.0-be.785**
+(téléchargé depuis builds.bepinex.dev, extrait dans
+`/private/tmp/.../scratchpad/bepinex-be785/`, installé dans le dossier du jeu à la place de
+be.697). Lancé sous `caffeinate -i` + Rosetta + le fix de version déjà en place (shadow data
+dir) + `BEPINEX_GAME_ASSEMBLY_PATH` pointé explicitement vers
+`fm.app/Contents/Frameworks/GameAssembly.dylib`.
 
-Cpp2IL/LibCpp2IL (embarqués dans BepInEx 6.0.0-be.697) ne savent lire que les métadonnées
-IL2CPP jusqu'à la version 29. FM26, sur Unity 6000.0.52f1, utilise la version 31 — un format
-plus récent que ce que ce build de Cpp2IL supporte. C'est indépendant du blocage n°1 (qui
-concerne la *détection de version*, pas le *format des métadonnées*) et n'a pas de rapport
-avec le chemin `GameAssembly.dylib` (le message "Could not locate" est une conséquence en
-cascade de l'échec de Cpp2IL, pas un problème de chemin séparé — vérifié en pointant
-explicitement `BEPINEX_GAME_ASSEMBLY_PATH` vers le vrai fichier, `fm.app/Contents/Frameworks/
-GameAssembly.dylib`, sans effet sur ce message).
+**Résultat confirmé** : `BepInEx/interop/` contient maintenant les 162 vraies assemblies
+IL2CPP du jeu, y compris les assemblies spécifiques FM26/Sports Interactive —
+`FM.GameConfig.dll`, `FM.GamePlugin.dll`, `FM.Graphics.dll`, `FM.Match.dll`, `FM.UI.dll`,
+`FMGame.dll`, `SI.Core.dll`, `SI.Match.dll`, `SI.Services.dll`, `SI.UI.dll`,
+`SI.Bindable.dll`, `SI.CityGen.dll`, etc. — en plus de tous les modules Unity/Il2Cpp
+standards. **La génération d'interop réussit : le blocage v31 est résolu.**
 
-**Tentative de contournement essayée cette session, non concluante** : téléchargement et
-extraction d'un build bleeding-edge plus récent de BepInEx (be.780, dans
-`/private/tmp/.../scratchpad/bepinex-be780/`) dans l'espoir d'un Cpp2IL à jour supportant la
-v31. **Non déployé pour de vrai** : le dernier `LogOutput.log` généré montre encore
-`BepInEx 6.0.0-be.697` — soit l'installation du be.780 n'a pas été menée à son terme, soit
-elle a été abandonnée en cours de route (le run a été interrompu par une mise en veille de la
-machine hôte avant conclusion). **À refaire proprement, pas à supposer résolu.**
+**Ce qui n'est PAS encore confirmé** : le chargement effectif du plugin hello-world
+(`src/FM26.BepInExPlugin/`). Le lancement de vérification a tourné ~7 minutes à 46-47% CPU
+après "Chainloader initialized" — le process est allé au-delà de BepInEx, dans le vrai
+bootstrap du jeu (chargement des traductions, tentatives d'init Steam API, création d'un
+canal multijoueur — visible dans le stdout complet du process, distinct du
+`BepInEx/LogOutput.log` propre à BepInEx), sans jamais logguer le message du plugin. Le
+process a été arrêté par précaution à ce stade plutôt que de le laisser continuer vers un
+écran ou menu quelconque. **Point d'honnêteté à noter** : le système de crash-reporting du
+jeu (Backtrace) a enregistré un évènement "game crash" dans le stdout au moment précis de
+l'arrêt (`Received game crash. Storing attributes...`) — impossible de dire avec certitude si
+c'est un vrai crash du moteur coïncidant avec l'arrêt, ou le signal d'arrêt lui-même interprété
+comme un crash par le SDK Backtrace. Aucun menu atteint, aucune save créée ni modifiée dans
+les deux cas (le stdout s'arrête au chargement des traductions/multijoueur, bien avant tout
+état lié à une save).
 
-**Rien n'a été forcé pour contourner ce blocage** (pas de patch binaire de Cpp2IL, pas de
-modification des fichiers du jeu au-delà du shadow-dir déjà décrit) — conformément à la
-consigne de s'arrêter plutôt que de pousser une solution bancale.
+**Rien n'a été forcé pour aller plus loin** (pas de patch binaire, pas de modification des
+fichiers du jeu au-delà du shadow-dir déjà décrit) — arrêt par précaution plutôt que de pousser
+la vérification jusqu'à un état incertain.
 
 ### Pistes pour la suite
 
-- **Prioritaire** : retenter proprement l'installation d'un build BepInEx bleeding-edge plus
-  récent que be.697 (builds.bepinex.dev) et vérifier via un vrai `LogOutput.log` frais si son
-  Cpp2IL supporte les métadonnées v31. C'était la piste en cours quand cette session a été
-  interrompue.
-- Si aucun build BepInEx existant ne supporte v31 : envisager de builder Cpp2IL/LibCpp2IL
-  depuis les sources avec un support v31 (existe potentiellement dans une branche plus
-  récente du projet Cpp2IL indépendamment de BepInEx) — plus lourd, à évaluer seulement si
-  la piste bleeding-edge échoue.
+- **Prioritaire** : relancer avec be.785 déjà installé (rien à retélécharger), en surveillant
+  précisément le moment après "Chainloader initialized" où les plugins IL2CPP se chargent
+  réellement — arrêter le process dès le message de log du plugin hello-world capté (ou dès
+  qu'on approche un écran/menu, selon ce qui vient en premier), pas après un délai fixe de
+  plusieurs minutes qui laisse le jeu avancer trop loin dans son bootstrap.
+- Une fois le chargement du plugin confirmé : faire l'inventaire exploratoire des
+  classes/namespaces utiles pour la Phase 3 (lecture/écriture moral, réputation, relations
+  joueur/staff) dans les assemblies `FM.*`/`SI.*` maintenant disponibles dans
+  `BepInEx/interop/` — c'était l'étape 5 prévue à l'origine pour ce chantier, jamais atteinte.
 - Ouvrir un ticket upstream (BepInEx et/ou Cpp2IL) : cas générique Unity 6000.x très récent,
   susceptible de concerner d'autres jeux, utile même si on trouve un contournement local.
 
