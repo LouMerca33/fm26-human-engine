@@ -441,13 +441,29 @@ correspondant à `Football Manager 26` par nom après chaque test (pas seulement
 explicitement) — aucune relance parasite observée une fois cette précaution en place. À
 garder systématiquement dans tout script de test futur touchant à ce jeu.
 
+**Deux tentatives de lancement de contrôle sans BepInEx — NON CONCLUANTES, abandonnées pour
+cette session.** Premier essai : `DYLD_LIBRARY_PATH` retiré par erreur en même temps que
+`DYLD_INSERT_LIBRARIES`. Deuxième essai, corrigé (`DYLD_LIBRARY_PATH` explicitement conservé
+à la même valeur que celle calculée par `run_bepinex.sh`, `steam_appid.txt` en place,
+uniquement `DYLD_INSERT_LIBRARIES` retiré) : **même résultat** — le jeu n'affiche toujours que
+la config mémoire Unity de démarrage en 60s, jamais les logs Steam/PlayFab habituels. Donc il
+existe une autre différence de contexte de lancement entre `run_bepinex.sh` et un `arch -x86_64
+<exécutable>` direct, non identifiée, qui n'est pas juste `DYLD_INSERT_LIBRARIES` ou
+`DYLD_LIBRARY_PATH` (peut-être liée à la résolution de chemins que fait `run_bepinex.sh`
+en interne, ou à `DYLD_LIBRARY_PATH` qui doit être formaté/ordonné différemment). **Ce test
+de contrôle s'est révélé être son propre chantier** — pas rentable de continuer à deviner la
+bonne combinaison de variables cette session ; si repris, partir de `run_bepinex.sh` tel
+quel et commenter uniquement la ligne qui exporte `DYLD_INSERT_LIBRARIES`, plutôt que de
+reconstruire l'environnement de lancement à la main.
+
 ### Pistes pour la suite
 
-- **Prioritaire** : diagnostiquer le crash mutex natif — en priorité, un lancement de
-  contrôle **sans BepInEx du tout** (juste `steam_appid.txt` + lancement direct sous Rosetta)
-  pour déterminer si le crash est préexistant au jeu/à son SDK multijoueur (dans ce cas, hors
-  du périmètre de ce projet, à contourner plutôt qu'à corriger) ou bien réellement causé par
-  l'interaction avec BepInEx/Dobby (dans ce cas, un problème à creuser côté hooking).
+- **Prioritaire** : lancement de contrôle sans BepInEx, fait correctement cette fois — copier
+  `run_bepinex.sh`, commenter uniquement la ligne `export DYLD_INSERT_LIBRARIES=...`, garder
+  tout le reste du script intact (résolution de chemins, `DYLD_LIBRARY_PATH`, etc.) plutôt que
+  de reconstruire l'environnement de lancement à la main. Objectif : déterminer si le crash
+  mutex est préexistant au jeu/à son SDK multijoueur (hors périmètre de ce projet, à
+  contourner) ou causé par l'interaction avec BepInEx/Dobby (à creuser côté hooking).
 - Une fois le chargement du plugin confirmé : faire l'inventaire exploratoire des
   classes/namespaces utiles pour la Phase 3 (lecture/écriture moral, réputation, relations
   joueur/staff) dans les assemblies `FM.*`/`SI.*` déjà disponibles dans `BepInEx/interop/`
