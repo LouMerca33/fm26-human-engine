@@ -409,31 +409,45 @@ plugins IL2CPP (Dobby est la bibliothèque de hooking native que BepInEx utilise
 intercepter les appels du runtime IL2CPP). **On est plus proche que jamais du chargement du
 plugin.**
 
-**Nouveau problème rencontré à ce stade, non résolu** : juste après le hook Dobby, un crash
-natif survient dans le stdout du jeu : `libc++abi: terminating due to uncaught exception of
-type std::__1::system_error: mutex lock failed: Invalid argument`. Pas d'erreur `Fatal` côté
-BepInEx dans `LogOutput.log` (qui s'arrête proprement à "Runtime invoke patched"), donc soit
-c'est un crash indépendant de BepInEx (thread PlayFab/réseau, timing Rosetta), soit une
-conséquence du hook Dobby sur un thread qui n'attendait pas d'être intercepté. Pas encore
-diagnostiqué précisément.
+**Crash natif confirmé reproductible (2 essais identiques, 2026-08-16)** : à chaque lancement,
+juste après l'initialisation réussie de la party multijoueur PlayFab (`NETWORKING_PLAYFAB
+Initialised and ready to use`, `Unhandled PartyStateChange: 0`) et à peu près au moment où
+BepInEx termine son hook Dobby (`Runtime invoke patched`), le stdout affiche systématiquement
+la même exception :
 
-**Découverte de sécurité importante** : après ce crash, un **nouveau process FM26 est apparu
-seul, orphelin (PPID 1), sans passer par `run_bepinex.sh`** — donc sans BepInEx, sans
-supervision, environ 1 minute après le crash. Mécanisme de relance automatique du jeu après
-crash (Steam et/ou le SDK Backtrace en ont un), complètement en dehors du script de
-surveillance qui ne suit que le PID lancé explicitement. Repéré et tué rapidement (86s
-d'exécution, encore loin d'un menu au moment du kill), mais **tout script de test futur doit
-tuer TOUT process correspondant à `Football Manager 26` par nom après chaque essai, pas
-seulement le PID suivi** — sans quoi un crash pourrait déclencher une relance non surveillée
-qui progresse sans limite vers un menu ou au-delà.
+```
+libc++abi: terminating due to uncaught exception of type std::__1::system_error:
+mutex lock failed: Invalid argument
+```
+
+Pas de trace de pile symbolisée disponible (exception C++ non attrapée, terminaison générique
+`libc++abi`, pas un rapport de crash macOS natif dans `~/Library/Logs/DiagnosticReports` sur
+aucun des essais). Pas d'erreur `Fatal` côté BepInEx dans `LogOutput.log`, qui s'arrête
+proprement à "Runtime invoke patched" — donc ce n'est vraisemblablement **pas** BepInEx qui
+plante directement, mais un thread du SDK PlayFab/multijoueur du jeu lui-même (mutex utilisé
+depuis un mauvais contexte de thread, ou corrompu — hypothèses non vérifiées : interaction
+avec le hook Dobby sur un thread qui n'attendait pas d'être intercepté, ou fragilité
+préexistante du SDK sous ce mode de lancement hors client Steam, indépendante de BepInEx).
+Diagnostiquer la cause exacte nécessiterait un vrai débogage natif (LLDB attaché au process,
+ou un lancement de contrôle sans BepInEx du tout pour voir si le crash survient quand même) —
+pas juste de la lecture de logs.
+
+**Découverte de sécurité confirmée** : lors du tout premier essai avec Steam correctement
+initialisé, ce crash a déclenché une **relance automatique du jeu, en process orphelin (PPID
+1), sans passer par `run_bepinex.sh`** — donc sans BepInEx, sans supervision — environ 1
+minute après le crash. Repéré et tué avant tout risque (le process était encore loin d'un
+menu). **Contre-mesure appliquée avec succès sur l'essai suivant** : tuer TOUT process
+correspondant à `Football Manager 26` par nom après chaque test (pas seulement le PID suivi
+explicitement) — aucune relance parasite observée une fois cette précaution en place. À
+garder systématiquement dans tout script de test futur touchant à ce jeu.
 
 ### Pistes pour la suite
 
-- **Prioritaire** : vérifier l'hypothèse Steam avant de retenter un simple délai plus long —
-  regarder si `run_bepinex.sh`/l'environnement peut simuler un contexte de lancement Steam
-  valide (`SteamAppId`/fichier `steam_appid.txt` à côté de l'exécutable, une pratique standard
-  pour lancer un jeu Steam hors du client), plutôt que de continuer à allonger un timeout à
-  l'aveugle sans savoir si ça débloquerait quoi que ce soit.
+- **Prioritaire** : diagnostiquer le crash mutex natif — en priorité, un lancement de
+  contrôle **sans BepInEx du tout** (juste `steam_appid.txt` + lancement direct sous Rosetta)
+  pour déterminer si le crash est préexistant au jeu/à son SDK multijoueur (dans ce cas, hors
+  du périmètre de ce projet, à contourner plutôt qu'à corriger) ou bien réellement causé par
+  l'interaction avec BepInEx/Dobby (dans ce cas, un problème à creuser côté hooking).
 - Une fois le chargement du plugin confirmé : faire l'inventaire exploratoire des
   classes/namespaces utiles pour la Phase 3 (lecture/écriture moral, réputation, relations
   joueur/staff) dans les assemblies `FM.*`/`SI.*` déjà disponibles dans `BepInEx/interop/`
