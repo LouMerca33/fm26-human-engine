@@ -384,41 +384,48 @@ les deux cas (le stdout s'arrête au chargement des traductions/multijoueur, bie
 fichiers du jeu au-delà du shadow-dir déjà décrit) — arrêt par précaution plutôt que de pousser
 la vérification jusqu'à un état incertain.
 
-### Blocage n°3 (nouveau, non résolu) — le jeu semble stagner avant le chargement des plugins IL2CPP
+### Blocage n°3 — hypothèse Steam confirmée et corrigée, session du 2026-08-16
 
-Session du 2026-08-15, deux essais chronométrés avec surveillance serrée (90s puis 300s),
-symlink `GameAssembly.dylib` en place à la racine du jeu (fix d'un problème séparé rencontré
-en cours de route : `Il2CppInteropManager.ComputeHash()` fait un accès fichier direct sur
-`<GameRoot>/GameAssembly.dylib`, indépendant du fix `DYLD_LIBRARY_PATH` qui ne couvre que le
-chargement dynamique — encore une variante du même problème de layout macOS que les blocages
-précédents ; symlink créé au même endroit que le vrai fichier dans
-`fm.app/Contents/Frameworks/`, jamais de copie).
+Le 2026-08-15, deux essais chronométrés (90s, 300s) montraient un blocage reproductible :
+BepInEx atteignait "Chainloader initialized" vite, puis le jeu stagnait après la création
+d'un canal multijoueur (`NETWORKING_PLAYFAB`), sans jamais logger le message du plugin.
+Hypothèse posée : le jeu attend une initialisation Steam qui n'aboutit jamais hors lancement
+via le client Steam.
 
-**Comportement identique et reproductible sur les deux essais** : BepInEx atteint
-"Chainloader initialized" en ~15-20s (rapide, fiable), puis le jeu continue son propre
-bootstrap — tentatives `SteamAPI_Init` qui échouent en boucle
-(`Tried to access Steam interface ... before SteamAPI_Init succeeded`), chargement des
-traductions (~20ms, réussi), création d'un canal multijoueur (`NETWORKING_PLAYFAB`) — puis
-**plus aucune progression visible pendant le reste de la fenêtre d'observation** (jusqu'à 5
-minutes testées), sans jamais atteindre le message de log du plugin hello-world. CPU du
-process élevé et soutenu pendant ce temps (utilisation active confirmée), pas un hang inerte.
+**Fix appliqué et confirmé le 2026-08-16** : App ID Steam de FM26 = `3551340` (trouvé dans
+`steamapps/appmanifest_3551340.acf`). Deux mécanismes standards Steamworks utilisés en
+parallèle :
+- `steam_appid.txt` contenant `3551340`, placé à la racine du dossier du jeu (**hors du bundle
+  `fm.app`**, donc pas de conflit avec la protection "App Management" — emplacement normal et
+  librement inscriptible, comme le shadow data dir).
+- Variable d'environnement `SteamAppId=3551340` exportée avant le lancement.
 
-Hypothèse à vérifier en priorité pour la suite : le jeu pourrait être bloqué en attente d'une
-initialisation Steam qui n'aboutit jamais dans ce contexte de lancement (process lancé
-manuellement hors Steam, pas via son launcher) — et le chargement des plugins IL2CPP par
-BepInEx pourrait être séquencé après cette étape, expliquant qu'il ne soit jamais atteint tant
-que Steam ne "débloque" pas la suite. Piste non vérifiée cette session.
+**Résultat** : `SteamAPI_Init(): ... OK` (au lieu des échecs en boucle précédents), login
+PlayFab réussi (App Ticket, token utilisateur obtenu), party multijoueur initialisée. Le
+Preloader BepInEx va **bien plus loin** qu'avant : au-delà de "Chainloader initialized",
+jusqu'au hook du runtime IL2CPP lui-même (`DobbyDetour] Preparing detour...`,
+`Runtime invoke patched`) — c'est l'étape juste avant l'exécution effective du code des
+plugins IL2CPP (Dobby est la bibliothèque de hooking native que BepInEx utilise pour
+intercepter les appels du runtime IL2CPP). **On est plus proche que jamais du chargement du
+plugin.**
 
-**Point d'honnêteté, observé identiquement sur les deux essais** : à chaque fois, l'arrêt
-manuel du process (`SIGTERM`) coïncide avec un évènement `Backtrace: Received game crash` dans
-le stdout, exactement au moment de l'arrêt. Reproductible à l'identique deux fois de suite —
-cohérent avec l'hypothèse que le SDK de crash-reporting du jeu (Backtrace) intercepte le
-signal `SIGTERM` lui-même et le journalise comme un crash, plutôt qu'un vrai plantage moteur
-indépendant à chaque fois. Non confirmé formellement (pas de rapport de crash macOS natif
-généré dans `~/Library/Logs/DiagnosticReports` sur ces deux essais), mais le pattern est trop
-régulier pour être une coïncidence. Dans les deux cas : aucun écran de menu atteint, aucune
-save créée ni modifiée (le stdout ne dépasse jamais le chargement des traductions/canal
-multijoueur).
+**Nouveau problème rencontré à ce stade, non résolu** : juste après le hook Dobby, un crash
+natif survient dans le stdout du jeu : `libc++abi: terminating due to uncaught exception of
+type std::__1::system_error: mutex lock failed: Invalid argument`. Pas d'erreur `Fatal` côté
+BepInEx dans `LogOutput.log` (qui s'arrête proprement à "Runtime invoke patched"), donc soit
+c'est un crash indépendant de BepInEx (thread PlayFab/réseau, timing Rosetta), soit une
+conséquence du hook Dobby sur un thread qui n'attendait pas d'être intercepté. Pas encore
+diagnostiqué précisément.
+
+**Découverte de sécurité importante** : après ce crash, un **nouveau process FM26 est apparu
+seul, orphelin (PPID 1), sans passer par `run_bepinex.sh`** — donc sans BepInEx, sans
+supervision, environ 1 minute après le crash. Mécanisme de relance automatique du jeu après
+crash (Steam et/ou le SDK Backtrace en ont un), complètement en dehors du script de
+surveillance qui ne suit que le PID lancé explicitement. Repéré et tué rapidement (86s
+d'exécution, encore loin d'un menu au moment du kill), mais **tout script de test futur doit
+tuer TOUT process correspondant à `Football Manager 26` par nom après chaque essai, pas
+seulement le PID suivi** — sans quoi un crash pourrait déclencher une relance non surveillée
+qui progresse sans limite vers un menu ou au-delà.
 
 ### Pistes pour la suite
 
