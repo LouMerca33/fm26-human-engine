@@ -1,6 +1,21 @@
 # STATUS — FM26 Human Engine
 
-Dernière mise à jour : 2026-08-14 (run autonome Claude Code, environnement cloud sans accès FM26/BepInEx/IL2CPP).
+Dernière mise à jour : 2026-08-20 (run autonome Claude Code, environnement cloud sans accès FM26/BepInEx/IL2CPP).
+
+## Note d'infrastructure — 2026-08-20
+
+Ce run a trouvé la branche locale `main` bloquée sur le commit initial (`33c4975`) alors que
+`HEAD` était détaché 12 commits plus loin (tout le travail Couche 1, Couche 2, et les
+expérimentations BepInEx). `origin/main` sur GitHub était donc lui aussi resté sur le commit
+initial — malgré des messages de commit précédents affirmant explicitement avoir "poussé" ce
+travail, rien n'avait réellement atteint le remote. Corrigé par fast-forward de `main` sur
+`824e7dc` puis `git push`. **Pour les runs futurs** : vérifier `git status`/`git branch` en
+tout début de run et s'assurer que le travail est bien commité sur `main` (pas sur un HEAD
+détaché) avant de pousser.
+
+`dotnet test` n'était pas non plus disponible dans ce conteneur au démarrage (SDK .NET absent) ;
+installé via `apt-get install dotnet-sdk-8.0` pour pouvoir valider réellement la suite avant
+conclusion — confirmé **125/125 tests passent**, aucune régression.
 
 ## Où en est le projet
 
